@@ -1,6 +1,7 @@
 package gcloud
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -13,7 +14,12 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const sessionName = "gcloudAuthSession"
+type contextKey string
+
+const (
+	sessionKey  contextKey = "email"
+	sessionName            = "gcloudAuthSession"
+)
 
 func NewAuthorizer(clientID, clientSecret, redirectURL string, cookieStoreKeyPairs [][]byte) *Authorizer {
 	conf := oauth2.Config{
@@ -96,4 +102,37 @@ func (a *Authorizer) HandleLogin(rw http.ResponseWriter, r *http.Request) {
 	http.SetCookie(rw, &cookie)
 	u := a.conf.AuthCodeURL(state)
 	http.Redirect(rw, r, u, http.StatusTemporaryRedirect)
+}
+
+func (a *Authorizer) HandleLogout(rw http.ResponseWriter, r *http.Request) {
+	sess, _ := a.store.Get(r, sessionName)
+	sess.Options.MaxAge = -1
+	_ = sess.Save(r, rw)
+	http.Redirect(rw, r, "/login", http.StatusSeeOther)
+}
+
+func (a *Authorizer) RequireAuth(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		sess, _ := a.store.Get(r, sessionName)
+		emailObj := sess.Values["email"]
+		if emailObj == nil {
+			sess.Values["redirect"] = r.URL.Path
+			_ = sess.Save(r, rw)
+			http.Redirect(rw, r, "/login", http.StatusTemporaryRedirect)
+			return
+		}
+		email := emailObj.(string)
+		r = r.WithContext(context.WithValue(r.Context(), sessionKey, Session{
+			Email: email,
+		}))
+		h.ServeHTTP(rw, r)
+	})
+}
+
+type Session struct {
+	Email string
+}
+
+func (a *Authorizer) GetSession(ctx context.Context) Session {
+	return ctx.Value(sessionKey).(Session)
 }
